@@ -15,9 +15,10 @@ import uuid
 from pathlib import Path
 
 import main as l2p
-#这里也是提交分布式训练任务，考虑是否用得上
+
 import submitit
 import datetime
+
 
 def parse_args():
     parser = argparse.ArgumentParser("Submitit for multinode training L2P")

@@ -10,14 +10,18 @@
 import random
 
 import torch
+
+# 这块Jittor的Subset功能不完善，故使用torch.utils.data.dataset.Subset
 from torch.utils.data.dataset import Subset
+
+# Jittor这部分功能不完善，故这一块使用torchvision的datasets
 from torchvision import datasets, transforms
 
 from timm.data import create_transform
 
 from continual_datasets.continual_datasets import *
 
-import utils
+from jittor.dataset import DataLoader, Dataset
 
 class Lambda(transforms.Lambda):
     def __init__(self, lambd, nb_classes):
@@ -72,32 +76,22 @@ def build_continual_dataloader(args):
                 dataset_train.target_transform = transform_target
                 dataset_val.target_transform = transform_target
         
-        if args.distributed and utils.get_world_size() > 1:
-            num_tasks = utils.get_world_size()
-            global_rank = utils.get_rank()
-
-            sampler_train = torch.utils.data.DistributedSampler(
-                dataset_train, num_replicas=num_tasks, rank=global_rank, shuffle=True)
-            
-            sampler_val = torch.utils.data.SequentialSampler(dataset_val)
-        else:
-            sampler_train = torch.utils.data.RandomSampler(dataset_train)
-            sampler_val = torch.utils.data.SequentialSampler(dataset_val)
+        # 暂不考虑分布式学习：
+        # 训练集 DataLoader（随机采样）
+        data_loader_train = DataLoader(
+            dataset_train,
+            batch_size=args.batch_size,
+            shuffle=True,           # 开启随机打乱
+            num_workers=args.num_workers,
+        )
+        # 验证集 DataLoader（顺序采样）
+        data_loader_val = DataLoader(
+            dataset_val,
+            batch_size=args.batch_size,
+            shuffle=False,          # 关闭打乱
+            num_workers=args.num_workers,
+        )
         
-        data_loader_train = torch.utils.data.DataLoader(
-            dataset_train, sampler=sampler_train,
-            batch_size=args.batch_size,
-            num_workers=args.num_workers,
-            pin_memory=args.pin_mem,
-        )
-
-        data_loader_val = torch.utils.data.DataLoader(
-            dataset_val, sampler=sampler_val,
-            batch_size=args.batch_size,
-            num_workers=args.num_workers,
-            pin_memory=args.pin_mem,
-        )
-
         dataloader.append({'train': data_loader_train, 'val': data_loader_val})
 
     return dataloader, class_mask

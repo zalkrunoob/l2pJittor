@@ -30,14 +30,9 @@ class SmoothedValue(object):
         """
         Warning: does not synchronize the deque!
         """
-        if not is_dist_avail_and_initialized():
-            return
-        t = jt.array([self.count, self.total], dtype='float64')
-        dist.barrier()
-        dist.all_reduce(t)
-        t = t.numpy().tolist()
-        self.count = int(t[0])
-        self.total = t[1]
+        # This method is a no-op in this implementation since we are not using distributed training.
+        return
+ 
 
     @property
     def median(self):
@@ -178,27 +173,20 @@ def setup_for_distributed(is_master):
 
 
 def is_dist_avail_and_initialized():
-    if not dist.is_available():
-        return False
-    if not dist.is_initialized():
-        return False
-    return True
+    return False
 
 
 def get_world_size():
-    if not is_dist_avail_and_initialized():
-        return 1
-    return dist.world_size()
+    return 1
 
 
 def get_rank():
-    if not is_dist_avail_and_initialized():
-        return 0
-    return dist.rank()
+    return 0
 
 
 def is_main_process():
-    return get_rank() == 0
+    # Check if the current process is the main process
+    return True
 
 
 def save_on_master(*args, **kwargs):
@@ -207,25 +195,7 @@ def save_on_master(*args, **kwargs):
 
 
 def init_distributed_mode(args):
-    if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
-        args.rank = int(os.environ["RANK"])
-        args.world_size = int(os.environ['WORLD_SIZE'])
-        args.gpu = int(os.environ['LOCAL_RANK'])
-    elif 'SLURM_PROCID' in os.environ:
-        args.rank = int(os.environ['SLURM_PROCID'])
-        args.gpu = args.rank % jt.device_count()
-    else:
-        print('Not using distributed mode')
-        args.distributed = False
-        return
-
-    args.distributed = True
-
-    jt.set_device(args.gpu)
-    args.dist_backend = 'nccl'
-    print('| distributed init (rank {}): {}'.format(
-        args.rank, args.dist_url), flush=True)
-    dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
-                             world_size=args.world_size, rank=args.rank)
-    dist.barrier()
-    setup_for_distributed(args.rank == 0)
+    # 明确设置为非分布式模式
+    args.distributed = False
+    args.rank = 0
+    args.world_size = 1
