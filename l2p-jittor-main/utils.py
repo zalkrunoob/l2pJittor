@@ -6,9 +6,6 @@ from collections import defaultdict, deque
 import datetime
 
 import jittor as jt
-from jittor import nn
-from jittor import init
-from jittor import transforms
 # import jittor.distributed as dist 该模块实际上不存在，这里不用分布式
 
 class SmoothedValue(object):
