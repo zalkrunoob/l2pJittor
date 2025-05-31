@@ -6,6 +6,7 @@
 # Added code for Simple Continual Learning datasets
 # -- Jaeho Lee, dlwogh9344@khu.ac.kr
 # ------------------------------------------
+# 由于加载数据这一块torch与datasets封装的很好，与jittor不太兼容，这里就直接用torch框架加载数据
 import os
 
 import os.path

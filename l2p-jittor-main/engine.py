@@ -27,8 +27,7 @@ from timm.optim import create_optimizer
 import utils
 
 def train_one_epoch(model: jt.nn.Module, original_model: jt.nn.Module, 
-                    criterion, data_loader: Iterable, optimizer: jt.optim.Optimizer,
-                    device: str, epoch: int, max_norm: float = 0,
+                    criterion, data_loader: Iterable, optimizer: jt.optim.Optimizer, epoch: int, max_norm: float = 0,
                     set_training_mode=True, task_id=-1, class_mask=None, args=None):
 
     model.train() if set_training_mode else model.eval()
@@ -44,8 +43,8 @@ def train_one_epoch(model: jt.nn.Module, original_model: jt.nn.Module,
     header = f'Train: Epoch[{epoch+1:{int(math.log10(args.epochs))+1}}/{args.epochs}]'
     
     for input, target in metric_logger.log_every(data_loader, args.print_freq, header):
-        input = input.to(device)
-        target = target.to(device)
+        input = input
+        target = target
 
         with jt.no_grad():
             if original_model is not None:
@@ -61,7 +60,7 @@ def train_one_epoch(model: jt.nn.Module, original_model: jt.nn.Module,
         if args.train_mask and class_mask is not None:
             mask = class_mask[task_id]
             not_mask = np.setdiff1d(np.arange(args.nb_classes), mask)
-            not_mask = jt.array(not_mask).int32().to(device)
+            not_mask = jt.array(not_mask).int32()
             logits = logits.index_fill(dim=1, index=not_mask, value=float('-inf'))
 
         loss = criterion(logits, target) # base criterion (CrossEntropyLoss)
@@ -93,8 +92,8 @@ def train_one_epoch(model: jt.nn.Module, original_model: jt.nn.Module,
 
 
 @jt.no_grad()
-def evaluate(model: jt.nn.Module, original_model: jt.nn.Module, data_loader, 
-            device, task_id=-1, class_mask=None, args=None):
+def evaluate(model: jt.nn.Module, original_model: jt.nn.Module, data_loader,
+             task_id=-1, class_mask=None, args=None):
     criterion = jt.nn.CrossEntropyLoss()
 
     metric_logger = utils.MetricLogger(delimiter="  ")
@@ -106,8 +105,8 @@ def evaluate(model: jt.nn.Module, original_model: jt.nn.Module, data_loader,
 
     with jt.no_grad():
         for input, target in metric_logger.log_every(data_loader, args.print_freq, header):
-            input = input.to(device)
-            target = target.to(device)
+            input = input
+            target = target
 
             # compute output
             if original_model is not None:
@@ -122,7 +121,7 @@ def evaluate(model: jt.nn.Module, original_model: jt.nn.Module, data_loader,
             if args.task_inc and class_mask is not None:
                 # adding mask to output logits
                 mask = class_mask[task_id]
-                mask = jt.array(mask).int32().to(device)
+                mask = jt.array(mask).int32()
                 logits_mask = jt.ones_like(logits) * float('-inf')
                 logits_mask = logits_mask.index_fill(1, mask, 0.0)
                 logits = logits + logits_mask
@@ -146,12 +145,12 @@ def evaluate(model: jt.nn.Module, original_model: jt.nn.Module, data_loader,
 
 @jt.no_grad()
 def evaluate_till_now(model: jt.nn.Module, original_model: jt.nn.Module, data_loader, 
-                    device, task_id=-1, class_mask=None, acc_matrix=None, args=None):
+                    task_id=-1, class_mask=None, acc_matrix=None, args=None):
     stat_matrix = np.zeros((3, args.num_tasks))  # 3 for Acc@1, Acc@5, Loss
 
     for i in range(task_id+1):
         test_stats = evaluate(model=model, original_model=original_model, data_loader=data_loader[i]['val'], 
-                            device=device, task_id=i, class_mask=class_mask, args=args)
+                            task_id=i, class_mask=class_mask, args=args)
 
         stat_matrix[0, i] = test_stats['Acc@1']
         stat_matrix[1, i] = test_stats['Acc@5']
@@ -178,8 +177,7 @@ def evaluate_till_now(model: jt.nn.Module, original_model: jt.nn.Module, data_lo
 
 
 def train_and_evaluate(model: jt.nn.Module, model_without_ddp: jt.nn.Module, original_model: jt.nn.Module, 
-                    criterion, data_loader: Iterable, optimizer: jt.nn.Optimizer, lr_scheduler, device: jt.Var, 
-                    class_mask=None, args=None):
+                    criterion, data_loader: Iterable, optimizer: jt.nn.Optimizer, lr_scheduler, class_mask=None, args=None):
     
     # create matrix to save end-of-task accuracies 
     acc_matrix = np.zeros((args.num_tasks, args.num_tasks))
@@ -223,14 +221,13 @@ def train_and_evaluate(model: jt.nn.Module, model_without_ddp: jt.nn.Module, ori
         
         for epoch in range(args.epochs):            
             train_stats = train_one_epoch(model=model, original_model=original_model, criterion=criterion, 
-                                        data_loader=data_loader[task_id]['train'], optimizer=optimizer, 
-                                        device=device, epoch=epoch, max_norm=args.clip_grad, 
+                                        data_loader=data_loader[task_id]['train'], optimizer=optimizer, epoch=epoch, max_norm=args.clip_grad, 
                                         set_training_mode=True, task_id=task_id, class_mask=class_mask, args=args)
             
             if lr_scheduler:
                 lr_scheduler.step(epoch)
 
-        test_stats = evaluate_till_now(model=model, original_model=original_model, data_loader=data_loader, device=device, 
+        test_stats = evaluate_till_now(model=model, original_model=original_model, data_loader=data_loader,
                                     task_id=task_id, class_mask=class_mask, acc_matrix=acc_matrix, args=args)
         
         if args.output_dir and utils.is_main_process():

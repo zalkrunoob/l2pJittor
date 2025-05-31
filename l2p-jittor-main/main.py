@@ -13,7 +13,7 @@ import random
 import numpy as np
 import time
 import torch
-import torch.backends.cudnn as cudnn
+import jittor as jt
 
 from pathlib import Path
 
@@ -32,15 +32,17 @@ warnings.filterwarnings('ignore', 'Argument interpolation should be of type Inte
 def main(args):
     utils.init_distributed_mode(args)
 
-    device = torch.device(args.device)
+    jt.flags.use_cuda = 1
+    # 指定使用哪块GPU
+    jt.flags.gpu_id = 1
 
     # fix the seed for reproducibility
     seed = args.seed
-    torch.manual_seed(seed)
+    jt.set_global_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
 
-    cudnn.benchmark = True
+    jt.flags.use_cuda = 1 
 
     data_loader, class_mask = build_continual_dataloader(args)
 
@@ -74,8 +76,8 @@ def main(args):
         head_type=args.head_type,
         use_prompt_mask=args.use_prompt_mask,
     )
-    original_model.to(device)
-    model.to(device)  
+    original_model
+    model 
 
     if args.freeze:
         # all parameters are frozen for original vit model
@@ -96,12 +98,13 @@ def main(args):
             checkpoint_path = os.path.join(args.output_dir, 'checkpoint/task{}_checkpoint.pth'.format(task_id+1))
             if os.path.exists(checkpoint_path):
                 print('Loading checkpoint from:', checkpoint_path)
-                checkpoint = torch.load(checkpoint_path)
+                # 加载模型参数
+                checkpoint = jt.load(checkpoint_path)
                 model.load_state_dict(checkpoint['model'])
             else:
                 print('No checkpoint found at:', checkpoint_path)
                 return
-            _ = evaluate_till_now(model, original_model, data_loader, device, 
+            _ = evaluate_till_now(model, original_model, data_loader, 
                                             task_id, class_mask, acc_matrix, args,)
         
         return
@@ -109,8 +112,7 @@ def main(args):
     model_without_ddp = model
     
     if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
-        model_without_ddp = model.module
+        print("Can't use DistributedDataParallel")
     
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('number of params:', n_parameters)
@@ -128,14 +130,15 @@ def main(args):
     elif args.sched == 'constant':
         lr_scheduler = None
 
-    criterion = torch.nn.CrossEntropyLoss().to(device)
+    # 交叉熵函数
+    criterion = jt.nn.CrossEntropyLoss()
 
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
 
     train_and_evaluate(model, model_without_ddp, original_model,
                     criterion, data_loader, optimizer, lr_scheduler,
-                    device, class_mask, args)
+                    class_mask, args)
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))

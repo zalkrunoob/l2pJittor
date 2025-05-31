@@ -9,8 +9,6 @@
 
 import random
 
-import torch
-
 # 这块Jittor的Subset功能不完善，故使用torch.utils.data.dataset.Subset
 from torch.utils.data.dataset import Subset
 
@@ -30,6 +28,25 @@ class Lambda(transforms.Lambda):
     
     def __call__(self, img):
         return self.lambd(img, self.nb_classes)
+
+import jittor as jt
+from jittor.dataset import Dataset
+from PIL import Image
+
+class JittorMNIST(Dataset):
+    def __init__(self, pytorch_dataset):
+        super().__init__()
+        self.data = jt.array(pytorch_dataset.data.numpy())  # 转换为 jittor.Var
+        self.targets = jt.array(pytorch_dataset.targets.numpy())
+         # 替换 Transform
+         
+    def __getitem__(self, idx):
+        img, target = self.data[idx], self.targets[idx]
+        return img, target
+
+    def __len__(self):
+        return len(self.data)
+
 
 def target_transform(x, nb_classes):
     return x + nb_classes
@@ -78,6 +95,12 @@ def build_continual_dataloader(args):
         
         # 暂不考虑分布式学习：
         # 训练集 DataLoader（随机采样）
+        # 查看dataset_train与 dataset_val的类型，并且转换为jittor的Dataset类型
+        if not isinstance(dataset_train, Dataset):
+            dataset_train = JittorMNIST(dataset_train)
+        if not isinstance(dataset_val, Dataset):
+            dataset_val = JittorMNIST(dataset_val)
+            
         data_loader_train = DataLoader(
             dataset_train,
             batch_size=args.batch_size,
