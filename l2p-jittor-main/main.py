@@ -13,20 +13,81 @@ import random
 import numpy as np
 import time
 import jittor as jt
+from jittor.optim import LambdaLR
+from jittor.optim import SGD, Adam, AdamW
 
 from pathlib import Path
-
 from timm.models import create_model
-from timm.scheduler import create_scheduler
-from timm.optim import create_optimizer
 
 from datasets import build_continual_dataloader
 from engine import *
 import models
 import utils
+from vision_transformer_jittor import VisionTransformer_jittor
+
 
 import warnings
 warnings.filterwarnings('ignore', 'Argument interpolation should be of type InterpolationMode instead of int')
+
+def create_optimizer_simple(args, model):
+    opt_name = args.opt.lower()
+    params = model.parameters() 
+    # 配置优化器参数
+    optim_kwargs = {
+        'lr': args.lr,
+        'weight_decay': args.weight_decay,
+        'eps': getattr(args, 'opt_eps', 1e-8)
+    }
+    
+    # 选择优化器类型
+    if opt_name == 'sgd':
+        optimizer = SGD(params, momentum=args.momentum, **optim_kwargs)
+    elif opt_name == 'adamw':
+        optimizer = AdamW(params, betas=getattr(args, 'opt_betas', (0.9, 0.999)), **optim_kwargs)
+    else:  # 默认用Adam
+        optimizer = Adam(params, betas=getattr(args, 'opt_betas', (0.9, 0.999)), **optim_kwargs)
+    
+    return optimizer
+
+def create_jittor_scheduler(args, optimizer):
+    sched_name = args.sched.lower()
+    num_epochs = args.epochs
+    
+    # 基础学习率设置
+    if args.unscale_lr:
+        lr = args.lr * args.batch_size * jt.world_size / 512.0
+    else:
+        lr = args.lr
+    # 分调度器类型实现
+    if sched_name == 'constant':
+        return LambdaLR(optimizer, lr_lambda=lambda epoch: 1.0)
+        
+    elif sched_name == 'cosine':
+        def _cosine_decay(epoch):
+            if epoch < args.warmup_epochs:
+                return (lr - args.warmup_lr) / args.warmup_epochs * epoch + args.warmup_lr
+            progress = (epoch - args.warmup_epochs) / (num_epochs - args.warmup_epochs)
+            return 0.5 * (1.0 + math.cos(math.pi * progress))
+        return LambdaLR(optimizer, lr_lambda=_cosine_decay)
+        
+    elif sched_name == 'step':
+        def _step_decay(epoch):
+            decay_rate = args.decay_rate ** (epoch // args.decay_epochs)
+            decay_rate = max(decay_rate, args.min_lr / lr)
+            return decay_rate
+        return LambdaLR(optimizer, lr_lambda=_step_decay)
+        
+    elif sched_name == 'multistep':
+        milestones = [int(num_epochs * x) for x in args.lr_milestones]
+        def _multistep_decay(epoch):
+            return args.decay_rate ** len([m for m in milestones if epoch >= m])
+        return LambdaLR(optimizer, lr_lambda=_multistep_decay)
+        
+    elif sched_name == 'plateau':
+        raise NotImplementedError("Plateau scheduler is not natively supported in Jittor")
+        
+    else:
+        raise ValueError(f"Unknown scheduler: {sched_name}")
 
 def main(args):
     utils.init_distributed_mode(args)
@@ -45,8 +106,9 @@ def main(args):
 
     data_loader, class_mask = build_continual_dataloader(args)
 
+    # 从timm模型工厂中加载模型，然后转换为jittor模型
     print(f"Creating original model: {args.model}")
-    original_model = create_model(
+    pytorch_original_model = create_model(
         args.model,
         pretrained=args.pretrained,
         num_classes=args.nb_classes,
@@ -56,7 +118,7 @@ def main(args):
     )
 
     print(f"Creating model: {args.model}")
-    model = create_model(
+    pytorch_model = create_model(
         args.model,
         pretrained=args.pretrained,
         num_classes=args.nb_classes,
@@ -75,17 +137,32 @@ def main(args):
         head_type=args.head_type,
         use_prompt_mask=args.use_prompt_mask,
     )
-    original_model
-    model 
+    #这里做模型框架的转换,, 
+    model = VisionTransformer_jittor()
+    original_model = VisionTransformer_jittor()
+    pytorch_original_model_state_dict = pytorch_original_model.state_dict()
+    pytorch_model_state_dict = pytorch_model.state_dict()
+    # 将pytorch模型的参数转换为jittor模型的参数
+    for key in pytorch_original_model_state_dict.keys():
+        if key in original_model.state_dict():
+            original_model.state_dict()[key].copy_(jt.array(pytorch_original_model_state_dict[key].numpy()))
+        else:
+            print(f"Warning: {key} not found in jittor model state_dict")
+    # 将pytorch模型的参数转换为jittor模型的参数
+    for key in pytorch_model_state_dict.keys():
+        if key in model.state_dict():
+            model.state_dict()[key].copy_(jt.array(pytorch_model_state_dict[key].numpy()))
+        else:
+            print(f"Warning: {key} not found in jittor model state_dict")
+     
 
     if args.freeze:
-        # all parameters are frozen for original vit model
-        for p in original_model.parameters():
-            p.requires_grad = False
+        # Jittor版 - 冻结original_model的所有参数
+        original_model.requires_grad_(False)
         
-        # freeze args.freeze[blocks, patch_embed, cls_token] parameters
+        # Jittor版 - 冻结指定前缀的参数
         for n, p in model.named_parameters():
-            if n.startswith(tuple(args.freeze)):
+            if any(n.startswith(prefix) for prefix in args.freeze):
                 p.requires_grad = False
 
     print(args)
@@ -125,7 +202,7 @@ def main(args):
     optimizer = create_optimizer(args, model_without_ddp)
 
     if args.sched != 'constant':
-        lr_scheduler, _ = create_scheduler(args, optimizer)
+        lr_scheduler = create_jittor_scheduler(args, optimizer)
     elif args.sched == 'constant':
         lr_scheduler = None
 

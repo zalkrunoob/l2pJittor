@@ -121,7 +121,7 @@ class Mlp(nn.Module):
         x = self.drop(x)
         return x
 
-class VisionTransformer(nn.Module):
+class VisionTransformer_jittor(nn.Module):
     """ Vision Transformer
     A Jittor impl of : `An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale`
         - https://arxiv.org/abs/2010.11929
