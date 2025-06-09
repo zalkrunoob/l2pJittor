@@ -572,6 +572,7 @@ def _load_weights(model: VisionTransformer_pytorch, checkpoint_path: str, prefix
         backbone = model.patch_embed.backbone
         stem_only = not hasattr(backbone, 'stem')
         stem = backbone if stem_only else backbone.stem
+        
         stem.conv.weight.copy_(adapt_input_conv(stem.conv.weight.shape[1], _n2p(w[f'{prefix}conv_root/kernel'])))
         stem.norm.weight.copy_(_n2p(w[f'{prefix}gn_root/scale']))
         stem.norm.bias.copy_(_n2p(w[f'{prefix}gn_root/bias']))
@@ -605,6 +606,7 @@ def _load_weights(model: VisionTransformer_pytorch, checkpoint_path: str, prefix
     model.pos_embed.copy_(pos_embed_w)
     model.norm.weight.copy_(_n2p(w[f'{prefix}Transformer/encoder_norm/scale']))
     model.norm.bias.copy_(_n2p(w[f'{prefix}Transformer/encoder_norm/bias']))
+    
     if isinstance(model.head, nn.Linear) and model.head.bias.shape[0] == w[f'{prefix}head/bias'].shape[-1]:
         model.head.weight.copy_(_n2p(w[f'{prefix}head/kernel']))
         model.head.bias.copy_(_n2p(w[f'{prefix}head/bias']))
@@ -691,17 +693,17 @@ def checkpoint_filter_fn(state_dict, model, adapt_layer_scale=False):
 def _create_vision_transformer(variant, pretrained=False, **kwargs):
     if kwargs.get('features_only', None):
         raise RuntimeError('features_only not implemented for Vision Transformer models.')
-
+    
     pretrained_cfg = resolve_pretrained_cfg(variant, pretrained_cfg=kwargs.pop('pretrained_cfg', None))
+
+    pretrained_cfg["file"] = "/home/xaMars/wjr_py/l2pJittor/checkpoints_vit/ViT-B_16.npz"
+    
     model = build_model_with_cfg(
         VisionTransformer_pytorch, variant, pretrained,
         pretrained_cfg=pretrained_cfg,
         pretrained_filter_fn=checkpoint_filter_fn,
         pretrained_custom_load='npz' in pretrained_cfg['url'],
         **kwargs)
-    
-    # 加载好pytorch框架下的模型后，转换为jittor框架下的模型
-    
     return model
 
 

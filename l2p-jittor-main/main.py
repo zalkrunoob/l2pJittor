@@ -13,132 +13,54 @@ import random
 import numpy as np
 import time
 import jittor as jt
-from jittor.optim import LambdaLR
-from jittor.optim import SGD, Adam, AdamW
-
 from pathlib import Path
 from timm.models import create_model
-
+from optim_scheduler import create_jittor_scheduler, create_jittor_optimizer
 from datasets import build_continual_dataloader
 from engine import *
-import models
+from models import vit_tiny_patch16_224
 import utils
 from vision_transformer_jittor import VisionTransformer_jittor
-
-
+from convert_pytorch_to_jittor import convert_pytorch_to_jittor_with_analysis
 import warnings
+
 warnings.filterwarnings('ignore', 'Argument interpolation should be of type InterpolationMode instead of int')
-
-def create_optimizer_simple(args, model):
-    opt_name = args.opt.lower()
-    params = model.parameters() 
-    # 配置优化器参数
-    optim_kwargs = {
-        'lr': args.lr,
-        'weight_decay': args.weight_decay,
-        'eps': getattr(args, 'opt_eps', 1e-8)
-    }
-    
-    # 选择优化器类型
-    if opt_name == 'sgd':
-        optimizer = SGD(params, momentum=args.momentum, **optim_kwargs)
-    elif opt_name == 'adamw':
-        optimizer = AdamW(params, betas=getattr(args, 'opt_betas', (0.9, 0.999)), **optim_kwargs)
-    else:  # 默认用Adam
-        optimizer = Adam(params, betas=getattr(args, 'opt_betas', (0.9, 0.999)), **optim_kwargs)
-    
-    return optimizer
-
-def create_jittor_scheduler(args, optimizer):
-    sched_name = args.sched.lower()
-    num_epochs = args.epochs
-    
-    # 基础学习率设置
-    if args.unscale_lr:
-        lr = args.lr * args.batch_size * jt.world_size / 512.0
-    else:
-        lr = args.lr
-    # 分调度器类型实现
-    if sched_name == 'constant':
-        return LambdaLR(optimizer, lr_lambda=lambda epoch: 1.0)
-        
-    elif sched_name == 'cosine':
-        def _cosine_decay(epoch):
-            if epoch < args.warmup_epochs:
-                return (lr - args.warmup_lr) / args.warmup_epochs * epoch + args.warmup_lr
-            progress = (epoch - args.warmup_epochs) / (num_epochs - args.warmup_epochs)
-            return 0.5 * (1.0 + math.cos(math.pi * progress))
-        return LambdaLR(optimizer, lr_lambda=_cosine_decay)
-        
-    elif sched_name == 'step':
-        def _step_decay(epoch):
-            decay_rate = args.decay_rate ** (epoch // args.decay_epochs)
-            decay_rate = max(decay_rate, args.min_lr / lr)
-            return decay_rate
-        return LambdaLR(optimizer, lr_lambda=_step_decay)
-        
-    elif sched_name == 'multistep':
-        milestones = [int(num_epochs * x) for x in args.lr_milestones]
-        def _multistep_decay(epoch):
-            return args.decay_rate ** len([m for m in milestones if epoch >= m])
-        return LambdaLR(optimizer, lr_lambda=_multistep_decay)
-        
-    elif sched_name == 'plateau':
-        raise NotImplementedError("Plateau scheduler is not natively supported in Jittor")
-        
-    else:
-        raise ValueError(f"Unknown scheduler: {sched_name}")
-
-def convert_pytorch_to_jittor(pytorch_model, jittor_model):
-    # 获取 PyTorch 模型的 state_dict（包含参数和 buffer）
-    pytorch_state_dict = pytorch_model.state_dict()
-    
-    # 遍历 Jittor 模型的所有参数和 buffer
-    for name, param in jittor_model.named_parameters():
-        if name in pytorch_state_dict:
-            # 直接赋值（Jittor 会自动处理类型转换）
-            param.assign(jt.array(pytorch_state_dict[name]))
-        else:
-            print(f"Warning: Parameter {name} not found in PyTorch state_dict")
-    
-    # 处理非可训练参数（如 BatchNorm 的 running_mean/var）
-    for name, buffer in jittor_model.named_buffers():
-        if name in pytorch_state_dict:
-            buffer.assign(jt.array(pytorch_state_dict[name]))
-        else:
-            print(f"Warning: Buffer {name} not found in PyTorch state_dict")
-    return jittor_model
+import os
 
 def main(args):
     utils.init_distributed_mode(args)
-
-    jt.flags.use_cuda = 1
-    # 指定使用哪块GPU
-    jt.flags.gpu_id = 1
-
     # fix the seed for reproducibility
     seed = args.seed
     jt.set_global_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
-
-    jt.flags.use_cuda = 1 
-
     data_loader, class_mask = build_continual_dataloader(args)
 
-    # 从timm模型工厂中加载模型，然后转换为jittor模型
+    # args.nb_classes
     print(f"Creating original model: {args.model}")
-    pytorch_original_model = create_model(
+    base_model = create_model(
         args.model,
         pretrained=args.pretrained,
         num_classes=args.nb_classes,
         drop_rate=args.drop,
         drop_path_rate=args.drop_path,
-        drop_block_rate=None,
+        drop_block_rate=None
     )
+    print(f"Number of parameters in original PyTorch model: {sum(p.numel() for p in base_model.parameters() if p.requires_grad)}")
+    model = VisionTransformer_jittor(num_classes=args.nb_classes,
+                                     drop_rate=args.drop,
+                                     drop_path_rate=args.drop_path)
 
-    print(f"Creating model: {args.model}")
-    pytorch_model = create_model(
+    # 转换为基础Jittor模型（共享权重）
+    print("Converting PyTorch model to Jittor model...")
+    original_model = convert_pytorch_to_jittor_with_analysis(base_model, model)
+    # 输出转换后的模型参数量：  
+    n_parameters_original_model = sum(p.numel() for p in original_model.parameters() if p.requires_grad)
+    print(f"Number of parameters in original Jittor model: {n_parameters_original_model}")
+    del base_model  # 立即释放PyTorch模型
+    del model  # 立即释放Jittor模型
+
+    base_model = create_model(
         args.model,
         pretrained=args.pretrained,
         num_classes=args.nb_classes,
@@ -157,16 +79,30 @@ def main(args):
         head_type=args.head_type,
         use_prompt_mask=args.use_prompt_mask,
     )
-    #这里做模型框架的转换,, 
-    model = VisionTransformer_jittor()
-    original_model = VisionTransformer_jittor()
-    # 转换 original_model
-    original_model = convert_pytorch_to_jittor(pytorch_original_model, original_model)
-    # 转换 model
-    model = convert_pytorch_to_jittor(pytorch_model, model)
+    model_1 = VisionTransformer_jittor(num_classes=args.nb_classes,          
+                                    drop_rate=args.drop,                   
+                                    drop_path_rate=args.drop_path,         
+                                    prompt_length=args.length,             
+                                    embedding_key=args.embedding_key,     
+                                    prompt_init=args.prompt_key_init,
+                                    prompt_pool=args.prompt_pool,         
+                                    prompt_key=args.prompt_key,           
+                                    pool_size=args.size,                  
+                                    top_k=args.top_k,                    
+                                    batchwise_prompt=args.batchwise_prompt, 
+                                    prompt_key_init=args.prompt_key_init,  
+                                    head_type=args.head_type,              
+                                    use_prompt_mask=args.use_prompt_mask)
     
-     
-
+    model = convert_pytorch_to_jittor_with_analysis(base_model, model_1)
+    del base_model  # 立即释放PyTorch模型
+    del model_1  # 立即释放Jittor模型
+    # 输出转换后的模型参数量：
+    n_parameters_converted_model = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Number of parameters in converted Jittor model: {n_parameters_converted_model}")
+    
+    jt.flags.use_cuda = 1
+    
     if args.freeze:
         # Jittor版 - 冻结original_model的所有参数
         original_model.requires_grad_(False)
@@ -210,7 +146,7 @@ def main(args):
         global_batch_size = args.batch_size * args.world_size
     args.lr = args.lr * global_batch_size / 256.0
 
-    optimizer = create_optimizer(args, model_without_ddp)
+    optimizer = create_jittor_optimizer(args, model_without_ddp)
 
     if args.sched != 'constant':
         lr_scheduler = create_jittor_scheduler(args, optimizer)

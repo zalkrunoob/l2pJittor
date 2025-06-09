@@ -7,10 +7,13 @@
 # -- Jaeho Lee, dlwogh9344@khu.ac.kr
 # ------------------------------------------
 
+from math import e
+import pickle
 import random
 
 # 这块Jittor的Subset功能不完善，故使用torch.utils.data.dataset.Subset
 from torch.utils.data.dataset import Subset
+
 
 # Jittor这部分功能不完善，故这一块使用torchvision的datasets
 from torchvision import datasets, transforms
@@ -20,6 +23,8 @@ from timm.data import create_transform
 from continual_datasets.continual_datasets import *
 
 from jittor.dataset import DataLoader, Dataset
+import gc
+
 
 class Lambda(transforms.Lambda):
     def __init__(self, lambd, nb_classes):
@@ -31,23 +36,107 @@ class Lambda(transforms.Lambda):
 
 import jittor as jt
 from jittor.dataset import Dataset
-from PIL import Image
+from tqdm import tqdm
 
-class JittorMNIST(Dataset):
+
+class JittorDataset(Dataset):
     def __init__(self, pytorch_dataset):
         super().__init__()
-        self.data = jt.array(pytorch_dataset.data.numpy())  # 转换为 jittor.Var
-        self.targets = jt.array(pytorch_dataset.targets.numpy())
-         # 替换 Transform
-         
+      
+        # 检查是否是 Subset
+        if hasattr(pytorch_dataset, "dataset"):
+            # 如果是 Subset，获取原始数据
+            actual_dataset = pytorch_dataset.dataset
+            indices = pytorch_dataset.indices if hasattr(pytorch_dataset, "indices") else range(len(pytorch_dataset))
+          
+            # 提取所有数据 - 这样会保持变换后的尺寸
+            data_list = []
+            targets_list = []
+            for idx in indices:
+                img, label = actual_dataset[idx]  # 获取经过变换的数据
+                data_list.append(np.array(img))
+                targets_list.append(label)
+          
+            self.data = jt.array(np.stack(data_list))
+            self.targets = jt.array(np.array(targets_list))
+        else:
+            # 检查数据集是否有 transforms
+            if hasattr(pytorch_dataset, 'transform') and pytorch_dataset.transform is not None:
+                # 如果有 transforms，通过 __getitem__ 获取变换后的数据
+                print(f"Dataset has transforms, extracting transformed data to preserve input shape...")
+                data_list = []
+                targets_list = []
+                
+                # 临时保存原始 transform
+                original_transform = pytorch_dataset.transform
+                
+                for i in range(len(pytorch_dataset)):
+                    img, label = pytorch_dataset[i]  # 获取变换后的数据
+                    data_list.append(np.array(img))
+                    targets_list.append(label)
+                
+                self.data = jt.array(np.stack(data_list))
+                self.targets = jt.array(np.array(targets_list))
+                
+            else:
+                # 如果没有 transforms，使用原始方法
+                dataset_name = type(pytorch_dataset).__name__
+                
+                if dataset_name in ['MNIST', 'FashionMNIST']:
+                    self.data = jt.array(pytorch_dataset.data.numpy())
+                    self.targets = jt.array(pytorch_dataset.targets.numpy())
+                    
+                elif dataset_name == 'CIFAR10':
+                    self.data = jt.array(pytorch_dataset.data)
+                    self.targets = jt.array(np.array(pytorch_dataset.targets))
+                    
+                elif dataset_name == 'SVHN':
+                    self.data = jt.array(pytorch_dataset.data)
+                    self.targets = jt.array(pytorch_dataset.labels)
+                    
+                elif dataset_name == 'NotMNIST':
+                    if hasattr(pytorch_dataset, 'data') and hasattr(pytorch_dataset, 'targets'):
+                        data = pytorch_dataset.data
+                        targets = pytorch_dataset.targets
+                        
+                        if hasattr(data, 'numpy'):
+                            data = data.numpy()
+                        if hasattr(targets, 'numpy'):
+                            targets = targets.numpy()
+                        elif isinstance(targets, list):
+                            targets = np.array(targets)
+                            
+                        self.data = jt.array(data)
+                        self.targets = jt.array(targets)
+                    else:
+                        data_list = []
+                        targets_list = []
+                        for i in range(len(pytorch_dataset)):
+                            img, label = pytorch_dataset[i]
+                            data_list.append(np.array(img))
+                            targets_list.append(label)
+                        
+                        self.data = jt.array(np.stack(data_list))
+                        self.targets = jt.array(np.array(targets_list))
+                else:
+                    # 通用方法 - 保持变换后的形状
+                    print(f"Using generic method for dataset type {dataset_name}")
+                    data_list = []
+                    targets_list = []
+                    for i in range(len(pytorch_dataset)):
+                        img, label = pytorch_dataset[i]
+                        data_list.append(np.array(img))
+                        targets_list.append(label)
+                    
+                    self.data = jt.array(np.stack(data_list))
+                    self.targets = jt.array(np.array(targets_list))
+      
     def __getitem__(self, idx):
         img, target = self.data[idx], self.targets[idx]
         return img, target
-
+        
     def __len__(self):
         return len(self.data)
-
-
 def target_transform(x, nb_classes):
     return x + nb_classes
 
@@ -65,8 +154,16 @@ def build_continual_dataloader(args):
 
         splited_dataset, class_mask = split_single_dataset(dataset_train, dataset_val, args)
     else:
+        # ['SVHN', 'MNIST', 'CIFAR10', 'NotMNIST', 'FashionMNIST']'SVHN'太大了，不跑
         if args.dataset == '5-datasets':
-            dataset_list = ['SVHN', 'MNIST', 'CIFAR10', 'NotMNIST', 'FashionMNIST']
+            if args.output_dir == 'ouotput_NotMNIST':
+                dataset_list = ['NotMNIST']
+            elif args.output_dir == 'output_CIFAR10':
+                dataset_list = ['CIFAR10']
+            elif args.output_dir == 'output_FashionMNIST':
+                dataset_list = ['FashionMNIST']
+            elif args.output_dir == 'output_MNIST':
+                dataset_list = ['MNIST']
         else:
             dataset_list = args.dataset.split(',')
         
@@ -94,12 +191,11 @@ def build_continual_dataloader(args):
                 dataset_val.target_transform = transform_target
         
         # 暂不考虑分布式学习：
-        # 训练集 DataLoader（随机采样）
-        # 查看dataset_train与 dataset_val的类型，并且转换为jittor的Dataset类型
+        # print(f"Single image shape: {image.shape}") 
         if not isinstance(dataset_train, Dataset):
-            dataset_train = JittorMNIST(dataset_train)
+            dataset_train = JittorDataset(dataset_train)
         if not isinstance(dataset_val, Dataset):
-            dataset_val = JittorMNIST(dataset_val)
+            dataset_val = JittorDataset(dataset_val)
             
         data_loader_train = DataLoader(
             dataset_train,
@@ -116,33 +212,35 @@ def build_continual_dataloader(args):
         )
         
         dataloader.append({'train': data_loader_train, 'val': data_loader_val})
-
+        
+        #保存dataloader, class_mask,
+        
     return dataloader, class_mask
 
 def get_dataset(dataset, transform_train, transform_val, args,):
     if dataset == 'CIFAR100':
-        dataset_train = datasets.CIFAR100(args.data_path, train=True, download=True, transform=transform_train)
-        dataset_val = datasets.CIFAR100(args.data_path, train=False, download=True, transform=transform_val)
+        dataset_train = datasets.CIFAR100(args.data_path, train=True, download=False, transform=transform_train)
+        dataset_val = datasets.CIFAR100(args.data_path, train=False, download=False, transform=transform_val)
 
     elif dataset == 'CIFAR10':
-        dataset_train = datasets.CIFAR10(args.data_path, train=True, download=True, transform=transform_train)
-        dataset_val = datasets.CIFAR10(args.data_path, train=False, download=True, transform=transform_val)
+        dataset_train = datasets.CIFAR10(args.data_path, train=True, download=False, transform=transform_train)
+        dataset_val = datasets.CIFAR10(args.data_path, train=False, download=False, transform=transform_val)
     
     elif dataset == 'MNIST':
-        dataset_train = MNIST_RGB(args.data_path, train=True, download=True, transform=transform_train)
-        dataset_val = MNIST_RGB(args.data_path, train=False, download=True, transform=transform_val)
+        dataset_train = MNIST_RGB(args.data_path, train=True, download=False, transform=transform_train)
+        dataset_val = MNIST_RGB(args.data_path, train=False, download=False, transform=transform_val)
     
     elif dataset == 'FashionMNIST':
-        dataset_train = FashionMNIST(args.data_path, train=True, download=True, transform=transform_train)
-        dataset_val = FashionMNIST(args.data_path, train=False, download=True, transform=transform_val)
+        dataset_train = FashionMNIST(args.data_path, train=True, download=False, transform=transform_train)
+        dataset_val = FashionMNIST(args.data_path, train=False, download=False, transform=transform_val)
     
     elif dataset == 'SVHN':
-        dataset_train = SVHN(args.data_path, split='train', download=True, transform=transform_train)
-        dataset_val = SVHN(args.data_path, split='test', download=True, transform=transform_val)
+        dataset_train = SVHN(args.data_path, split='train', download=False, transform=transform_train)
+        dataset_val = SVHN(args.data_path, split='test', download=False, transform=transform_val)
     
     elif dataset == 'NotMNIST':
-        dataset_train = NotMNIST(args.data_path, train=True, download=True, transform=transform_train)
-        dataset_val = NotMNIST(args.data_path, train=False, download=True, transform=transform_val)
+        dataset_train = NotMNIST(args.data_path, train=True, download=False, transform=transform_train)
+        dataset_val = NotMNIST(args.data_path, train=False, download=False, transform=transform_val)
     
     elif dataset == 'Flower102':
         dataset_train = Flowers102(args.data_path, split='train', download=True, transform=transform_train)
@@ -223,6 +321,7 @@ def build_transform(is_train, args):
 
     t = []
     if resize_im:
+        print('Resize input')
         size = int((256 / 224) * args.input_size)
         t.append(
             transforms.Resize(size, interpolation=3),  # to maintain same ratio w.r.t. 224 images

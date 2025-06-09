@@ -128,13 +128,7 @@ class MetricLogger(object):
             if i % print_freq == 0 or i == len(iterable) - 1:
                 eta_seconds = iter_time.global_avg * (len(iterable) - i)
                 eta_string = str(datetime.timedelta(seconds=int(eta_seconds)))
-                if jt.flags.use_cuda:
-                    print(log_msg.format(
-                        i, len(iterable), eta=eta_string,
-                        meters=str(self),
-                        time=str(iter_time), data=str(data_time),
-                        memory=jt.get_max_memory_tensor() / MB))
-                else:
+                if not jt.flags.use_cuda:
                     print(log_msg.format(
                         i, len(iterable), eta=eta_string,
                         meters=str(self),

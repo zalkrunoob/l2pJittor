@@ -1,1 +1,5 @@
-data/
+checkpoints_vit/
+/l2p-jittor-main/local_datasets/
+/l2p-jittor-main/__pycache__/
+/l2p-jittor-main/
+
