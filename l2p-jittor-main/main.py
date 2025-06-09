@@ -89,6 +89,26 @@ def create_jittor_scheduler(args, optimizer):
     else:
         raise ValueError(f"Unknown scheduler: {sched_name}")
 
+def convert_pytorch_to_jittor(pytorch_model, jittor_model):
+    # 获取 PyTorch 模型的 state_dict（包含参数和 buffer）
+    pytorch_state_dict = pytorch_model.state_dict()
+    
+    # 遍历 Jittor 模型的所有参数和 buffer
+    for name, param in jittor_model.named_parameters():
+        if name in pytorch_state_dict:
+            # 直接赋值（Jittor 会自动处理类型转换）
+            param.assign(jt.array(pytorch_state_dict[name]))
+        else:
+            print(f"Warning: Parameter {name} not found in PyTorch state_dict")
+    
+    # 处理非可训练参数（如 BatchNorm 的 running_mean/var）
+    for name, buffer in jittor_model.named_buffers():
+        if name in pytorch_state_dict:
+            buffer.assign(jt.array(pytorch_state_dict[name]))
+        else:
+            print(f"Warning: Buffer {name} not found in PyTorch state_dict")
+    return jittor_model
+
 def main(args):
     utils.init_distributed_mode(args)
 
@@ -140,20 +160,11 @@ def main(args):
     #这里做模型框架的转换,, 
     model = VisionTransformer_jittor()
     original_model = VisionTransformer_jittor()
-    pytorch_original_model_state_dict = pytorch_original_model.state_dict()
-    pytorch_model_state_dict = pytorch_model.state_dict()
-    # 将pytorch模型的参数转换为jittor模型的参数
-    for key in pytorch_original_model_state_dict.keys():
-        if key in original_model.state_dict():
-            original_model.state_dict()[key].copy_(jt.array(pytorch_original_model_state_dict[key].numpy()))
-        else:
-            print(f"Warning: {key} not found in jittor model state_dict")
-    # 将pytorch模型的参数转换为jittor模型的参数
-    for key in pytorch_model_state_dict.keys():
-        if key in model.state_dict():
-            model.state_dict()[key].copy_(jt.array(pytorch_model_state_dict[key].numpy()))
-        else:
-            print(f"Warning: {key} not found in jittor model state_dict")
+    # 转换 original_model
+    original_model = convert_pytorch_to_jittor(pytorch_original_model, original_model)
+    # 转换 model
+    model = convert_pytorch_to_jittor(pytorch_model, model)
+    
      
 
     if args.freeze:

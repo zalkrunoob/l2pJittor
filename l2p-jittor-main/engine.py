@@ -144,6 +144,7 @@ def evaluate(model: jt.nn.Module, original_model: jt.nn.Module, data_loader,
 
 
 @jt.no_grad()
+# 这一块没有记录日志信息
 def evaluate_till_now(model: jt.nn.Module, original_model: jt.nn.Module, data_loader, 
                     task_id=-1, class_mask=None, acc_matrix=None, args=None):
     stat_matrix = np.zeros((3, args.num_tasks))  # 3 for Acc@1, Acc@5, Loss
